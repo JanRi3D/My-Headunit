@@ -115,6 +115,7 @@ fun ConnectScreen(app: App, state: CarState) {
                 Radar(state)
                 VSpace(24.dp)
                 ConnectionText(state)
+                OfflineUpdates(app)
             }
             Column(Modifier.fillMaxWidth().padding(top = 24.dp)) {
                 Field(
@@ -271,7 +272,10 @@ fun CarHome(app: App, info: CarInfo, onAddApp: (ManagedApp?) -> Unit) {
             title = if (update) "Update ${row.app.name} on the car?" else "Install ${row.app.name} on the car?",
             body = buildString {
                 append(if (update) "${versionLabel(row)} → ${r.label}" else r.label)
-                append(" · ${formatSize(r.size)} download from ${row.app.source?.describe()}.")
+                append(
+                    if (row.ready) " · already downloaded (${formatSize(r.size)}), no internet needed."
+                    else " · ${formatSize(r.size)} download from ${row.app.source?.describe()}.",
+                )
                 if (update) append(" The app keeps its data.")
             },
             confirm = if (update) "Update" else "Install",
@@ -289,11 +293,7 @@ fun CarHome(app: App, info: CarInfo, onAddApp: (ManagedApp?) -> Unit) {
 @Composable
 private fun Header(check: CheckState, onRefresh: () -> Unit) {
     val now by ticker()
-    val label = when (check) {
-        CheckState.Checking -> "Checking…"
-        is CheckState.Failed -> "Check failed"
-        is CheckState.Idle -> if (check.lastOk == 0L) "Not checked yet" else "Checked ${ago(check.lastOk, now)}"
-    }
+    val label = checkLabel(check, now)
     Row(Modifier.fillMaxWidth().height(40.dp), verticalAlignment = Alignment.CenterVertically) {
         Label("My Headunit", Modifier.weight(1f), heading = true)
         Label(label, style = T.tag, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
@@ -402,7 +402,18 @@ private fun UpdateCard(pending: List<AppRow>, onNotNow: () -> Unit, onUpdate: ()
 
 private fun versionLabel(row: AppRow) = row.installed?.let { it.versionName ?: "build ${it.versionCode}" } ?: "—"
 
+private fun checkLabel(check: CheckState, now: Long) = when (check) {
+    CheckState.Checking -> "Checking…"
+    is CheckState.Failed -> "Check failed"
+    is CheckState.Idle -> if (check.lastOk == 0L) "Not checked yet" else "Checked ${ago(check.lastOk, now)}"
+}
+
 private fun rowMeta(row: AppRow, progress: me.ri3d.adb.Op.Progress?): Pair<String, Color> {
+    val (text, color) = rowStatus(row, progress)
+    return (if (progress == null && row.ready && (row.updateAvailable || row.installable)) "$text · ready offline" else text) to color
+}
+
+private fun rowStatus(row: AppRow, progress: me.ri3d.adb.Op.Progress?): Pair<String, Color> {
     if (progress != null) {
         val pct = progress.fraction?.let { " ${(it * 100).toInt()}%" } ?: ""
         return "${progress.phase}$pct" to C.Muted
@@ -585,3 +596,69 @@ fun ago(t: Long, now: Long): String {
     }
 }
 
+
+// ---------------------------------------------------------------- offline updates
+
+/**
+ * Shown while not connected: what the car had at the last visit and which updates exist, with a
+ * user-started download so they can be installed at the car without internet.
+ */
+@Composable
+private fun OfflineUpdates(app: App) {
+    val car by app.apps.lastCar.collectAsStateWithLifecycle()
+    val rows by app.apps.rows.collectAsStateWithLifecycle()
+    val check by app.apps.check.collectAsStateWithLifecycle()
+    val snap = car ?: return
+    val now by ticker()
+    val todo = rows.filter { it.updateAvailable || it.installable }
+    val missing = todo.filter { !it.ready && it.op == null }
+    Column(
+        Modifier
+            .padding(top = 20.dp)
+            .fillMaxWidth()
+            .border(1.dp, C.Outline, RoundedCornerShape(14.dp))
+            .padding(start = 16.dp, top = 6.dp, end = 6.dp, bottom = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Label("Updates for ${snap.name}", heading = true, style = T.label.copy(letterSpacing = 1.2.sp))
+                MetaText("Apps as of ${ago(snap.at, now)} · ${checkLabel(check, now).lowercase()}", maxLines = 1)
+            }
+            IconBtn(Icons.Refresh, "Check for updates", { app.apps.refresh() }, iconSize = 20.dp, enabled = check != CheckState.Checking)
+        }
+        if (todo.isEmpty()) {
+            Text(
+                if (check is CheckState.Failed) "Couldn't check: ${(check as CheckState.Failed).reason}"
+                else "Nothing to update. The car's apps were up to date at the last visit.",
+                style = T.small, modifier = Modifier.padding(end = 10.dp, bottom = 4.dp),
+            )
+        }
+        todo.forEach { row ->
+            val p = row.op?.progress?.collectAsStateWithLifecycle()?.value
+            Row(Modifier.fillMaxWidth().padding(end = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(row.app.name, style = T.bodyStrong.copy(fontSize = 15.sp))
+                Text(
+                    if (row.installed != null) "${versionLabel(row)} → ${row.release!!.label}" else "${row.release!!.label} · new",
+                    style = T.meta.copy(fontSize = 13.sp, lineHeight = 20.sp), color = C.Text2, modifier = Modifier.weight(1f),
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+                when {
+                    p != null -> MetaText(p.fraction?.let { "${(it * 100).toInt()}%" } ?: "…")
+                    row.ready -> MetaText("Ready", C.Green)
+                }
+            }
+        }
+        if (missing.isNotEmpty()) {
+            Row(Modifier.fillMaxWidth().padding(end = 4.dp), horizontalArrangement = Arrangement.End) {
+                ChipButton(
+                    "Download for offline · ${formatSize(missing.sumOf { it.release!!.size })}",
+                    { app.apps.downloadForOffline(missing.map { it.app }) },
+                    style = Chip.Filled, icon = Icons.Download,
+                )
+            }
+        } else if (todo.isNotEmpty() && todo.all { it.ready }) {
+            Text("Downloaded. Connect to the car to install, no internet needed.", style = T.small, modifier = Modifier.padding(end = 10.dp, bottom = 4.dp))
+        }
+    }
+}

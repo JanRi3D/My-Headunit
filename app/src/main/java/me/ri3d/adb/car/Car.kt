@@ -57,6 +57,7 @@ data class CarInfo(
     /** Increments with every new connection, so consumers can react once per connection. */
     val session: Long,
 ) {
+    val traits get() = me.ri3d.adb.apps.CarTraits(sdk, release, abis)
     val name get() = listOf(manufacturer, model).filter { it.isNotBlank() && !it.equals("unknown", true) }.distinct().joinToString(" ").ifBlank { "Head unit" }
 }
 

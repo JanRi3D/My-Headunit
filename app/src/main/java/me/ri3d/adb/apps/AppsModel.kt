@@ -21,6 +21,7 @@ import me.ri3d.adb.adb.InstalledVersion
 import me.ri3d.adb.car.CarInfo
 import me.ri3d.adb.car.CarState
 import me.ri3d.adb.car.InstallPhase
+import me.ri3d.adb.car.NoInternet
 import me.ri3d.adb.car.cleanTempApks
 import me.ri3d.adb.car.installApk
 import me.ri3d.adb.car.installedVersions
@@ -36,9 +37,13 @@ data class AppRow(
     val installedKnown: Boolean,
     val release: Release?,
     val checkError: String?,
-    /** Why [release] doesn't fit the connected car. */
+    /** Why [release] doesn't fit the car. */
     val incompatible: String?,
     val op: Op?,
+    /** [installed] comes from the connected car, not from the last visit. */
+    val live: Boolean = true,
+    /** [release]'s APK is downloaded and can be installed without internet. */
+    val ready: Boolean = false,
 ) {
     val updateAvailable get() = installed != null && release != null && incompatible == null && release.versionCode > installed.versionCode
     val installable get() = installedKnown && installed == null && release != null && incompatible == null
@@ -74,6 +79,13 @@ class AppsModel(private val app: App) {
 
     private val managed = MutableStateFlow(load())
     private val installed = MutableStateFlow<Map<String, InstalledVersion>?>(null)
+    private val snapshot = MutableStateFlow(settings.carSnapshot)
+
+    /** The car as last seen; null until the first connection. */
+    val lastCar: StateFlow<CarSnapshot?> = snapshot
+
+    /** Release APKs downloaded ahead of time. */
+    val cache = ApkCache(File(app.filesDir, "apks"))
     private val releases = MutableStateFlow(settings.releases)
     private val errors = MutableStateFlow<Map<String, String>>(emptyMap())
     private val busy = MutableStateFlow<Map<String, Op>>(emptyMap())
@@ -85,18 +97,24 @@ class AppsModel(private val app: App) {
 
     val apps: StateFlow<List<ManagedApp>> = managed
 
-    val rows: StateFlow<List<AppRow>> = combine(managed, installed, releases, errors, busy) { list, inst, rel, err, ops ->
-        val info = car.info
+    // Connected: what the car reports. Otherwise: what it had at the last visit.
+    private val onCar = combine(installed, snapshot) { live, snap -> live?.let { it to true } ?: snap?.let { it.installed to false } }
+    private val extras = combine(busy, cache.versions, snapshot) { ops, cached, snap -> Triple(ops, cached, snap) }
+
+    val rows: StateFlow<List<AppRow>> = combine(managed, onCar, releases, errors, extras) { list, oc, rel, err, (ops, cached, snap) ->
+        val t = car.info?.traits ?: snap?.traits
         list.map { a ->
             val r = rel[a.packageName]?.takeIf { a.source != null }
             AppRow(
                 app = a,
-                installed = inst?.get(a.packageName),
-                installedKnown = inst != null,
+                installed = oc?.first?.get(a.packageName),
+                installedKnown = oc != null,
                 release = r,
                 checkError = err[a.packageName],
-                incompatible = if (r != null && info != null) incompatibility(r.minSdk, r.abis, info.sdk, info.release, info.abis) else null,
+                incompatible = if (r != null && t != null) incompatibility(r.minSdk, r.abis, t.sdk, t.release, t.abis) else null,
                 op = ops[a.packageName],
+                live = oc?.second == true,
+                ready = r != null && cached[a.packageName] == r.versionCode,
             )
         }
     }.stateIn(app.scope, SharingStarted.Eagerly, emptyList())
@@ -120,7 +138,11 @@ class AppsModel(private val app: App) {
                 }
             }
         }
+        // Also away from the car: release metadata is a few KB, so check at app start when stale.
+        app.scope.launch { if (stale()) checkUpdates(manual = false) }
     }
+
+    private fun stale() = System.currentTimeMillis() - settings.lastCheckOk > 30 * 60_000
 
     private fun load(): List<ManagedApp> {
         val overrides = settings.sourceOverrides
@@ -132,12 +154,23 @@ class AppsModel(private val app: App) {
         car.cleanTempApks()
         refreshInstalled()
         // Once per connection, and not again within 30 min: cached metadata covers the gap.
-        if (System.currentTimeMillis() - settings.lastCheckOk > 30 * 60_000) checkUpdates(manual = false)
+        if (stale()) checkUpdates(manual = false)
+    }
+
+    /** Records the car's apps, also as the snapshot for offline use, and drops downloads it no longer needs. */
+    private fun setInstalled(now: Map<String, InstalledVersion>) {
+        installed.value = now
+        car.info?.let { info ->
+            val s = CarSnapshot(info.name, info.serial, info.traits, now, System.currentTimeMillis())
+            snapshot.value = s
+            settings.carSnapshot = s
+        }
+        cache.prune(now, releases.value)
     }
 
     suspend fun refreshInstalled() {
         try {
-            installed.value = car.installedVersions(managed.value.map { it.packageName })
+            setInstalled(car.installedVersions(managed.value.map { it.packageName }))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -149,7 +182,7 @@ class AppsModel(private val app: App) {
     fun refresh() {
         dismissed.value = emptySet()
         app.scope.launch {
-            refreshInstalled()
+            if (car.info != null) refreshInstalled()
             checkUpdates(manual = true)
         }
     }
@@ -162,7 +195,7 @@ class AppsModel(private val app: App) {
             val failures = mutableMapOf<String, String>()
             for (a in withSource) {
                 try {
-                    val r = app.releases.latest(a, a.source!!, car.info, releases.value[a.packageName])
+                    val r = app.releases.latest(a, a.source!!, car.info?.traits ?: snapshot.value?.traits, releases.value[a.packageName])
                     releases.update { it + (a.packageName to r) }
                 } catch (e: CancellationException) {
                     throw e
@@ -172,10 +205,11 @@ class AppsModel(private val app: App) {
             }
             settings.releases = releases.value
             errors.value = failures
+            (installed.value ?: snapshot.value?.installed)?.let { cache.prune(it, releases.value) }
             if (failures.isEmpty()) {
                 settings.lastCheckOk = System.currentTimeMillis()
                 _check.value = CheckState.Idle(settings.lastCheckOk)
-                if (manual && pending.value.isEmpty()) app.say("All apps on the car are up to date")
+                if (manual && rows.value.none { it.updateAvailable }) app.say("All apps on the car are up to date")
             } else {
                 val reason = failures.values.distinct().let { if (it.size == 1) it[0] else "${failures.size} sources couldn't be checked" }
                 _check.value = CheckState.Failed(reason, settings.lastCheckOk)
@@ -219,20 +253,57 @@ class AppsModel(private val app: App) {
         val info = car.info ?: throw me.ri3d.adb.car.NotConnected()
         val r = releases.value[a.packageName] ?: throw IllegalStateException("No known release")
         incompatibility(r.minSdk, r.abis, info.sdk, info.release, info.abis)?.let { throw IllegalStateException(it) }
-        val dir = File(app.cacheDir, "releases")
+        val file = fetch(a, r, op)
+        val now = car.installApk(file, r.packageName, r.versionCode) { p -> op.report(p) }
+        setInstalled((installed.value ?: emptyMap()) + (a.packageName to now))
+        cache.drop(a.packageName) // installed: the download isn't needed any more (a failed install keeps it)
+        return now
+    }
+
+    /** The release APK from the offline store, downloading and verifying it first if needed. */
+    private suspend fun fetch(a: ManagedApp, r: Release, op: Op): File {
+        if (cache.has(r)) return cache.file(r.packageName, r.versionCode)
         op.phase("Downloading ${r.label}…", 0, r.size)
-        val file = app.releases.download(r, dir) { done, total -> op.phase("Downloading ${r.label}…", done, total) }
+        val file = try {
+            app.releases.download(r, cache.dir) { done, total -> op.phase("Downloading ${r.label}…", done, total) }
+        } catch (e: java.io.IOException) {
+            // No internet at all, or a network that can't reach the server (typical at the car).
+            if (e !is NoInternet && e !is java.net.UnknownHostException && e !is java.net.ConnectException && e !is java.net.SocketTimeoutException) throw e
+            throw IllegalStateException("Can't download ${a.name} ${r.label} here (${e.message}). Use “Download for offline” while you have internet.", e)
+        }
         try {
             val local = withContext(Dispatchers.IO) { inspectApkFile(app, file, file.name) }
             if (local.manifest.packageName != r.packageName || local.manifest.versionCode != r.versionCode) {
                 throw IllegalStateException("The downloaded APK isn't ${r.packageName} ${r.label}")
             }
             withContext(Dispatchers.IO) { saveIcon(app, file, a.packageName) }
-            val now = car.installApk(file, r.packageName, r.versionCode) { p -> op.report(p) }
-            installed.update { (it ?: emptyMap()) + (a.packageName to now) }
-            return now
-        } finally {
+        } catch (e: Throwable) {
             file.delete()
+            throw e
+        }
+        cache.keep(r.packageName, r.versionCode)
+        return file
+    }
+
+    /** Downloads the known releases of [targets] so they can be installed at the car without internet (user-initiated). */
+    fun downloadForOffline(targets: List<ManagedApp>) {
+        for (a in targets.filter { busy.value[it.packageName] == null }) {
+            val r = releases.value[a.packageName] ?: continue
+            if (cache.has(r)) continue
+            Ops.launch(app, app.scope, "Downloading ${a.name} ${r.label}") { op ->
+                busy.update { it + (a.packageName to op) }
+                try {
+                    fetch(a, r, op)
+                    app.say("${a.name} ${r.label} is ready to install without internet")
+                } catch (e: CancellationException) {
+                    app.say("${a.name}: download cancelled")
+                    throw e
+                } catch (e: Exception) {
+                    app.say("${a.name}: ${e.message}")
+                } finally {
+                    busy.update { it - a.packageName }
+                }
+            }
         }
     }
 
@@ -323,7 +394,7 @@ class AppsModel(private val app: App) {
                 withContext(Dispatchers.IO) { saveIcon(app, apk.file, pkg) }
                 val now = installLock.withLock { car.installApk(apk.file, pkg, apk.manifest.versionCode) { p -> op.report(p) } }
                 addCustom(pkg, name)
-                installed.update { (it ?: emptyMap()) + (pkg to now) }
+                setInstalled((installed.value ?: emptyMap()) + (pkg to now))
                 val shown = managed.value.first { it.packageName == pkg }
                 var detail = "${now.versionName ?: "build ${now.versionCode}"} is installed. ${shown.name} shows up under Apps on the car."
                 if (openAfter) {

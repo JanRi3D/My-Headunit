@@ -3,6 +3,7 @@ package me.ri3d.adb
 import android.annotation.SuppressLint
 import android.content.Context
 import androidx.core.content.edit
+import me.ri3d.adb.apps.CarSnapshot
 import me.ri3d.adb.apps.ManagedApp
 import me.ri3d.adb.apps.Release
 import me.ri3d.adb.apps.Source
@@ -56,6 +57,11 @@ class Settings(context: Context) {
             o.keys().asSequence().mapNotNull { k -> runCatching { k to Release.fromJson(o.getJSONObject(k)) }.getOrNull() }.toMap()
         } ?: emptyMap()
         set(v) = p.edit { putString("releases", JSONObject().apply { v.forEach { (k, r) -> put(k, r.toJson()) } }.toString()) }
+
+    /** The car as last seen (installed versions, Android version, CPU), for offline update checks. */
+    var carSnapshot: CarSnapshot?
+        get() = json(p.getString("carSnapshot", null), ::JSONObject)?.let { runCatching { CarSnapshot.fromJson(it) }.getOrNull() }
+        set(v) = p.edit { putString("carSnapshot", v?.toJson()?.toString()) }
 
     private fun <T> json(s: String?, parse: (String) -> T): T? = s?.let { runCatching { parse(it) }.getOrNull() }
 

@@ -93,7 +93,7 @@ class CarService : Service() {
         }
         getSystemService(NotificationManager::class.java)
             .createNotificationChannel(NotificationChannel(CHANNEL, "Car connection and transfers", NotificationManager.IMPORTANCE_LOW))
-        promote(notification(app.car.state.value, Ops.active.value.firstOrNull(), null), Ops.active.value.isNotEmpty())
+        promote(notification(app.car.state.value, Ops.active.value.firstOrNull(), null), Ops.active.value.isNotEmpty(), app.car.state.value is CarState.Connected)
         if (!watching) {
             watching = true
             @OptIn(ExperimentalCoroutinesApi::class)
@@ -104,7 +104,7 @@ class CarService : Service() {
                         ServiceCompat.stopForeground(this@CarService, ServiceCompat.STOP_FOREGROUND_REMOVE)
                         stopSelf()
                     } else {
-                        promote(notification(s, p?.first, p?.second), p != null)
+                        promote(notification(s, p?.first, p?.second), p != null, s is CarState.Connected)
                     }
                 }
             }
@@ -113,9 +113,9 @@ class CarService : Service() {
     }
 
     @SuppressLint("InlinedApi") // ServiceCompat ignores the type before Android 10
-    private fun promote(n: Notification, transferring: Boolean) {
-        val type = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
-            (if (transferring) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0)
+    private fun promote(n: Notification, transferring: Boolean, connected: Boolean) {
+        val type = if (!connected) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+        else ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or (if (transferring) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0)
         ServiceCompat.startForeground(this, ID, n, type)
     }
 

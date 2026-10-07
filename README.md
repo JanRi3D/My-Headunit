@@ -149,6 +149,22 @@ reads them from the APK itself, as for GitHub.
   Update/Install (with a confirmation dialog) starts download → SHA-256/size check → transfer →
   `pm install -r` → version check.
 
+### Updating without internet at the car
+
+The car's Wi-Fi usually has no internet, and the phone may have no mobile data there.
+
+- After every connection the app remembers the car: its installed versions, Android version and
+  CPU. Away from the car it also checks for updates when the app starts (if the last check is
+  older than 30 minutes).
+- While not connected, the Car screen shows **Updates for <car>** with what the car needs and
+  **Download for offline**. Downloads only start when you tap it; they are checked (size,
+  SHA-256, package and versionCode) and kept in app storage (`files/apks`).
+- At the car, rows say "ready offline" and Install/Update uses the stored APK, with no internet.
+  The stored APK is deleted once the car has that version, or when a newer release replaces it;
+  a failed install keeps it for the next try.
+- Without a stored APK and without internet, installing fails with a message pointing to
+  "Download for offline".
+
 ## Installing APKs
 
 "APK from phone" uses the system file picker, copies the file into app storage, and reads it
@@ -218,7 +234,11 @@ Verified on 2026-10-07 with emulators (Android 16 phone emulator running the app
   `mCurrentFocus`, confirmed, force-stopped);
 - ADB authentication with the Keystore key against the Android 16 emulator's own adbd over TCP:
   fingerprint matches the car-side dialog, Allow → connected, next connection signs without a
-  prompt.
+  prompt;
+- offline updates (with the phone emulator's own adbd as the car): car remembered after
+  disconnecting, "Download for offline" of OpenAuto and Welle while online, then with the
+  phone's HTTP blocked: "Check failed" (not "up to date") and Welle installed from the stored
+  APK, which was removed afterwards.
 
 **Not verified — needs the physical head unit**: its real Wi-Fi/hotspot routing at
 `192.168.43.1` with the phone's mobile data as internet, the 4 KiB packet limit on real

@@ -2,7 +2,6 @@ package me.ri3d.adb.apps
 
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
-import me.ri3d.adb.car.CarInfo
 import me.ri3d.adb.car.Net
 import org.json.JSONArray
 import org.json.JSONObject
@@ -57,7 +56,7 @@ class SourceError(message: String) : IOException(message)
 class Releases(private val net: Net) {
 
     /** The latest release of [app] that suits [car]; [cached] is reused when the asset is unchanged. */
-    suspend fun latest(app: ManagedApp, source: Source, car: CarInfo?, cached: Release?): Release = net.withInternet { network ->
+    suspend fun latest(app: ManagedApp, source: Source, car: CarTraits?, cached: Release?): Release = net.withInternet { network ->
         val candidates = when (source) {
             is Source.GitHub -> gitHubAssets(network, source)
             is Source.Manifest -> manifestApks(network, source)
@@ -113,7 +112,7 @@ class Releases(private val net: Net) {
     }
 
     /** Prefers an asset named for the car's ABI, then "universal", then the first; declared metadata must fit. */
-    private fun pickForCar(c: List<Candidate>, car: CarInfo?): Candidate? {
+    private fun pickForCar(c: List<Candidate>, car: CarTraits?): Candidate? {
         val fitting = c.filter { it.declared == null || car == null || incompatibility(it.declared.minSdk, it.declared.abis, car.sdk, car.release, car.abis) == null }
         val abis = car?.abis.orEmpty()
         return fitting.firstOrNull { cand -> abis.any { cand.name.contains(it, true) } }
