@@ -13,3 +13,6 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Build output copied to the project root by :app:assembleDebug
+/My-Headunit.apk
