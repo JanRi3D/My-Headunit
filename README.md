@@ -100,9 +100,10 @@ The catalog is in `app/src/main/java/me/ri3d/adb/apps/Catalog.kt`:
 |---|---|---|---|
 | OpenAuto | `me.ri3d.openauto` | launcher activity | `github:JanRi3D/OpenAuto`, asset `openauto-*-release.apk` |
 | Welle | `me.ri3d.welle` | launcher activity | `github:JanRi3D/Welle`, asset `welle-*-release.apk` |
+| OpenDashboard | `me.ri3d.dashboard` | launcher activity | `github:JanRi3D/OpenDashboard`, asset `opendashboard-*-release.apk` |
 | FileExplorer | `com.estrongs.android.pop` | `com.estrongs.android.pop/com.estrongs.android.pop.view.FileExplorerActivity` | **not configured** |
 
-Package IDs and asset names come from the two repositories (`applicationId` in
+Package IDs and asset names come from the three repositories (`applicationId` in
 `app/build.gradle.kts`, the asset name in `.github/workflows/release.yml`). FileExplorer's
 package and activity are the ones given in the requirements; it has no known public release
 feed, so it shows "Source not configured" until you add one.

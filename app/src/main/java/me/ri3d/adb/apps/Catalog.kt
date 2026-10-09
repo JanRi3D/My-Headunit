@@ -68,6 +68,12 @@ object Catalog {
             fromCatalog = true,
         ),
         ManagedApp(
+            packageName = "me.ri3d.dashboard",
+            name = "OpenDashboard",
+            source = Source.GitHub("JanRi3D/OpenDashboard", Regex("""opendashboard-.*-release\.apk""")),
+            fromCatalog = true,
+        ),
+        ManagedApp(
             packageName = "com.estrongs.android.pop",
             name = "FileExplorer",
             source = null,
