@@ -116,6 +116,7 @@ fun ConnectScreen(app: App, state: CarState) {
                 VSpace(24.dp)
                 ConnectionText(state)
                 OfflineUpdates(app)
+                SelfUpdateCard(app)
             }
             Column(Modifier.fillMaxWidth().padding(top = 24.dp)) {
                 Field(
@@ -245,6 +246,7 @@ fun CarHome(app: App, info: CarInfo, onAddApp: (ManagedApp?) -> Unit) {
         if (pending.isNotEmpty() && check != CheckState.Checking) {
             UpdateCard(pending, onNotNow = { app.apps.notNow() }, onUpdate = { app.apps.installReleases(pending.map { it.app }) })
         }
+        SelfUpdateCard(app)
 
         Row(Modifier.fillMaxWidth().padding(top = 12.dp).height(44.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
             Label("Apps on the car", heading = true)
@@ -396,6 +398,39 @@ private fun UpdateCard(pending: List<AppRow>, onNotNow: () -> Unit, onUpdate: ()
                     Text("Update on the car", style = T.small.copy(fontWeight = FontWeight.SemiBold), color = C.Bg)
                 }
             }
+        }
+    }
+}
+
+/** My Headunit's own update; it installs on this phone, not on the car. */
+@Composable
+private fun SelfUpdateCard(app: App) {
+    val r = app.selfUpdate.available.collectAsStateWithLifecycle().value ?: return
+    val op = app.selfUpdate.op.collectAsStateWithLifecycle().value
+    val p = op?.progress?.collectAsStateWithLifecycle()?.value
+    Column(
+        Modifier
+            .padding(top = 20.dp)
+            .fillMaxWidth()
+            .border(1.dp, C.Outline, RoundedCornerShape(14.dp))
+            .padding(start = 16.dp, top = 14.dp, end = 10.dp, bottom = 10.dp)
+            .semantics { liveRegion = LiveRegionMode.Polite },
+    ) {
+        Label("App update", style = T.label.copy(letterSpacing = 1.2.sp), heading = true)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("My Headunit", style = T.bodyStrong)
+            Text(
+                "${app.selfUpdate.current} → ${r.label}", style = T.meta.copy(fontSize = 13.sp, lineHeight = 20.sp), color = C.Text2,
+                modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            if (op != null) IconBtn(Icons.Close, "Cancel the My Headunit update", { op.cancel() })
+            else ChipButton("Update", { app.selfUpdate.install() }, style = Chip.Filled, description = "Update My Headunit on this phone")
+        }
+        if (p != null) {
+            MetaText("${p.phase}${p.fraction?.let { " ${(it * 100).toInt()}%" } ?: ""}")
+            ProgressLine(p.fraction, Modifier.padding(top = 6.dp))
+        } else {
+            MetaText("${formatSize(r.size)} · installs on this phone")
         }
     }
 }

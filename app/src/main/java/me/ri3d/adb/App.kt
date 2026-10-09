@@ -10,6 +10,7 @@ import kotlinx.coroutines.launch
 import me.ri3d.adb.adb.KeystoreKey
 import me.ri3d.adb.apps.AppsModel
 import me.ri3d.adb.apps.Releases
+import me.ri3d.adb.apps.SelfUpdate
 import me.ri3d.adb.car.Car
 import me.ri3d.adb.car.CarState
 import me.ri3d.adb.car.Net
@@ -26,6 +27,7 @@ class App : Application() {
     lateinit var net: Net
     lateinit var car: Car
     lateinit var releases: Releases
+    lateinit var selfUpdate: SelfUpdate
     lateinit var apps: AppsModel
     lateinit var files: FilesModel
     lateinit var console: Console
@@ -45,6 +47,7 @@ class App : Application() {
         val key by lazy { KeystoreKey.load() }
         car = Car(scope, settings, net) { key }
         releases = Releases(net)
+        selfUpdate = SelfUpdate(this) // before AppsModel, whose first update check includes it
         apps = AppsModel(this)
         files = FilesModel(this)
         console = Console(this)

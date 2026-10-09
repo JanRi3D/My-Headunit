@@ -190,6 +190,7 @@ class AppsModel(private val app: App) {
     private fun checkUpdates(manual: Boolean) {
         if (checkJob?.isActive == true) return
         checkJob = app.scope.launch {
+            launch { app.selfUpdate.check() }
             val withSource = managed.value.filter { it.source != null }
             _check.value = CheckState.Checking
             val failures = mutableMapOf<String, String>()

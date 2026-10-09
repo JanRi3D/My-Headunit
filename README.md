@@ -156,6 +156,16 @@ reads them from the APK itself, as for GitHub.
   Update/Install (with a confirmation dialog) starts download → SHA-256/size check → transfer →
   `pm install -r` → version check.
 
+### Updating My Headunit itself
+
+The same checks also ask `github:JanRi3D/My-Headunit` (asset `my-headunit-*-release.apk`). A
+release with a higher `versionCode` that runs on this phone shows an "App update" card; Update
+downloads it (size/SHA-256 checked) and hands it to Android's package installer, which asks for
+confirmation (and, the first time, for "Install unknown apps" permission). Android only accepts
+the update if it is signed with the same key as the installed app: a debug build from
+`assembleDebug` can't be updated by a CI release; install a release build once first. Bump
+`versionCode` in `app/build.gradle.kts` for every release. A failed self-check is only logged.
+
 ### Updating without internet at the car
 
 The car's Wi-Fi usually has no internet, and the phone may have no mobile data there.
