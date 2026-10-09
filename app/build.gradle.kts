@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -24,8 +26,24 @@ android {
         compose = true
     }
 
+    // Release signing: keystore.properties (ignored by git) names the keystore and its passwords.
+    // Without it the release build stays unsigned. CI writes the file from repository secrets.
+    val keystoreProperties = rootProject.file("keystore.properties")
+    signingConfigs {
+        if (keystoreProperties.exists()) {
+            val props = Properties().apply { keystoreProperties.inputStream().use { load(it) } }
+            create("release") {
+                storeFile = rootProject.file(props.getProperty("storeFile"))
+                storePassword = props.getProperty("storePassword")
+                keyAlias = props.getProperty("keyAlias")
+                keyPassword = props.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig = signingConfigs.findByName("release")
             optimization {
                 enable = false
             }

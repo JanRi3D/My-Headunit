@@ -16,3 +16,9 @@ local.properties
 
 # Build output copied to the project root by :app:assembleDebug
 /My-Headunit.apk
+
+# release signing: the keystore and its passwords stay on the build machine
+keystore.properties
+*.jks
+*.keystore
+app/release/

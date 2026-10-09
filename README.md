@@ -33,6 +33,12 @@ The debug APK is copied to `My-Headunit.apk` in the project root. Checks:
 compileSdk is 37 only because Compose 1.12 requires it; `targetSdk` stays 36. Versions are
 pinned in `gradle/libs.versions.toml`.
 
+Releases: pushing a `v*` tag runs `.github/workflows/release.yml` (tests, lint, signed release
+build) and attaches `my-headunit-<versionName>-release.apk` to the GitHub release. It needs the
+repository secrets `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS` and `KEY_PASSWORD`. Locally,
+a `keystore.properties` in the project root (`storeFile`, `storePassword`, `keyAlias`,
+`keyPassword`) signs `:app:assembleRelease`; without it the release APK is unsigned.
+
 ## Car setup
 
 1. Enable ADB over the network on the head unit (port 5555). Depending on the unit: a
