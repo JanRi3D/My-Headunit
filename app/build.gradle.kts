@@ -18,8 +18,8 @@ android {
         // which works with head units back to Android 4.x (see README, "Car compatibility").
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
     }
 
     buildFeatures {
