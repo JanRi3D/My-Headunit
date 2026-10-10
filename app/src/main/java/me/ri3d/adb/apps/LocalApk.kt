@@ -17,7 +17,9 @@ data class LocalApk(
     val manifest: ManifestInfo,
     val abis: Set<String>,
     val label: String?,
-)
+) {
+    val name get() = label ?: manifest.packageName
+}
 
 /** Copies [uri] into [dir] and reads its metadata. Throws [InvalidApk] with a user-facing reason. */
 fun inspectApk(context: Context, uri: Uri, dir: File): LocalApk {

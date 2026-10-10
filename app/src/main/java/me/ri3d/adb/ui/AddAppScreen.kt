@@ -132,6 +132,9 @@ private fun Form(app: App, target: ManagedApp?) {
 
 // ---------------------------------------------------------------- APK from phone
 
+/** File picker types; some file managers report APKs as plain binary or zip. */
+val ApkTypes = arrayOf("application/vnd.android.package-archive", "application/octet-stream", "application/zip")
+
 @Composable
 private fun ApkTab(app: App, target: ManagedApp?) {
     val picked by app.apps.picked.collectAsStateWithLifecycle()
@@ -141,7 +144,7 @@ private fun ApkTab(app: App, target: ManagedApp?) {
     val car = (carState as? CarState.Connected)?.info
     val managed by app.apps.apps.collectAsStateWithLifecycle()
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) app.apps.pick(uri) }
-    fun choose() = pick.launch(arrayOf("application/vnd.android.package-archive", "application/octet-stream", "application/zip"))
+    fun choose() = pick.launch(ApkTypes)
 
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         when (val p = picked) {

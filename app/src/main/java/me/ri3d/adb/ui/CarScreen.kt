@@ -3,6 +3,8 @@ package me.ri3d.adb.ui
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.provider.Settings as AndroidSettings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -77,7 +79,9 @@ import me.ri3d.adb.App
 import me.ri3d.adb.Settings
 import me.ri3d.adb.apps.AppRow
 import me.ri3d.adb.apps.CheckState
+import me.ri3d.adb.apps.LocalApk
 import me.ri3d.adb.apps.ManagedApp
+import me.ri3d.adb.apps.QueuedApk
 import me.ri3d.adb.apps.iconFile
 import me.ri3d.adb.car.CarInfo
 import me.ri3d.adb.car.CarState
@@ -116,6 +120,7 @@ fun ConnectScreen(app: App, state: CarState) {
                 VSpace(24.dp)
                 ConnectionText(state)
                 OfflineUpdates(app)
+                QueueCard(app)
                 SelfUpdateCard(app)
             }
             Column(Modifier.fillMaxWidth().padding(top = 24.dp)) {
@@ -221,6 +226,7 @@ private fun Radar(state: CarState) {
 fun CarHome(app: App, info: CarInfo, onAddApp: (ManagedApp?) -> Unit) {
     val rows by app.apps.rows.collectAsStateWithLifecycle()
     val pending by app.apps.pending.collectAsStateWithLifecycle()
+    val queued by app.apps.queued.collectAsStateWithLifecycle()
     val check by app.apps.check.collectAsStateWithLifecycle()
     var confirm by remember { mutableStateOf<AppRow?>(null) }
     var details by rememberSaveable { mutableStateOf<String?>(null) }
@@ -243,8 +249,12 @@ fun CarHome(app: App, info: CarInfo, onAddApp: (ManagedApp?) -> Unit) {
         VSpace(14.dp)
         TileGrid(rows)
 
-        if (pending.isNotEmpty() && check != CheckState.Checking) {
-            UpdateCard(pending, onNotNow = { app.apps.notNow() }, onUpdate = { app.apps.installReleases(pending.map { it.app }) })
+        val updates = if (check == CheckState.Checking) emptyList() else pending
+        if (updates.isNotEmpty() || queued.isNotEmpty()) {
+            UpdateCard(
+                updates, queued, onNotNow = { app.apps.notNow() }, onRemove = { app.apps.dequeue(it) },
+                onUpdate = { app.apps.installReleases(updates.map { it.app }); app.apps.installQueue() },
+            )
         }
         SelfUpdateCard(app)
 
@@ -367,16 +377,23 @@ private fun rememberIcon(pkg: String, version: Long?): ImageBitmap? {
 }
 
 @Composable
-private fun UpdateCard(pending: List<AppRow>, onNotNow: () -> Unit, onUpdate: () -> Unit) {
+private fun UpdateCard(pending: List<AppRow>, queued: List<QueuedApk>, onNotNow: () -> Unit, onRemove: (LocalApk) -> Unit, onUpdate: () -> Unit) {
     Column(
         Modifier
             .padding(top = 20.dp)
             .fillMaxWidth()
             .border(1.dp, C.Outline, RoundedCornerShape(14.dp))
-            .padding(start = 16.dp, top = 14.dp, end = 10.dp, bottom = 6.dp)
-            .semantics { liveRegion = LiveRegionMode.Polite },
+            .padding(start = 16.dp, top = 14.dp, end = 10.dp, bottom = 6.dp),
     ) {
-        Label(if (pending.size == 1) "Update available" else "${pending.size} updates available", style = T.label.copy(letterSpacing = 1.2.sp), heading = true)
+        val n = pending.size + queued.size
+        Label(
+            when {
+                queued.isNotEmpty() -> "$n ready to install"
+                n == 1 -> "Update available"
+                else -> "$n updates available"
+            },
+            Modifier.semantics { liveRegion = LiveRegionMode.Polite }, style = T.label.copy(letterSpacing = 1.2.sp), heading = true,
+        )
         Column(Modifier.padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             pending.forEach { row ->
                 Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -384,9 +401,11 @@ private fun UpdateCard(pending: List<AppRow>, onNotNow: () -> Unit, onUpdate: ()
                     Text("${versionLabel(row)} → ${row.release!!.label}", style = T.meta.copy(fontSize = 13.sp, lineHeight = 20.sp), color = C.Text2)
                 }
             }
+            queued.forEach { QueuedRow(it) { onRemove(it.apk) } }
         }
+        if (pending.isEmpty() && queued.all { it.op != null }) return@Column
         Row(Modifier.fillMaxWidth().padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End), verticalAlignment = Alignment.CenterVertically) {
-            GhostButton("Not now", onNotNow)
+            if (pending.isNotEmpty()) GhostButton("Not now", onNotNow)
             Box(
                 Modifier
                     .height(44.dp)
@@ -643,9 +662,11 @@ private fun OfflineUpdates(app: App) {
     val car by app.apps.lastCar.collectAsStateWithLifecycle()
     val rows by app.apps.rows.collectAsStateWithLifecycle()
     val check by app.apps.check.collectAsStateWithLifecycle()
+    val queued by app.apps.queued.collectAsStateWithLifecycle()
     val snap = car ?: return
     val now by ticker()
-    val todo = rows.filter { it.updateAvailable || it.installable }
+    // A queued APK file replaces the release of its app.
+    val todo = rows.filter { r -> (r.updateAvailable || r.installable) && queued.none { it.apk.manifest.packageName == r.app.packageName } }
     val missing = todo.filter { !it.ready && it.op == null }
     Column(
         Modifier
@@ -695,5 +716,46 @@ private fun OfflineUpdates(app: App) {
         } else if (todo.isNotEmpty() && todo.all { it.ready }) {
             Text("Downloaded. Connect to the car to install, no internet needed.", style = T.small, modifier = Modifier.padding(end = 10.dp, bottom = 4.dp))
         }
+    }
+}
+
+/** APK files picked ahead of time (e.g. from different folders at home); at the car one tap installs them with the updates. */
+@Composable
+private fun QueueCard(app: App) {
+    val queued by app.apps.queued.collectAsStateWithLifecycle()
+    val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> app.apps.enqueue(uris) }
+    Column(
+        Modifier
+            .padding(top = 20.dp)
+            .fillMaxWidth()
+            .border(1.dp, C.Outline, RoundedCornerShape(14.dp))
+            .padding(start = 16.dp, top = 6.dp, end = 6.dp, bottom = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Label("APK files for the car", Modifier.weight(1f), heading = true, style = T.label.copy(letterSpacing = 1.2.sp))
+            ChipButton("Add", { pick.launch(ApkTypes) }, icon = Icons.Plus, description = "Add APK files to install at the car")
+        }
+        if (queued.isEmpty()) {
+            Text("Choose APK files now. At the car, connect and tap “Update on the car” once.", style = T.small, modifier = Modifier.padding(end = 10.dp, bottom = 4.dp))
+        }
+        queued.forEach { QueuedRow(it) { app.apps.dequeue(it.apk) } }
+    }
+}
+
+@Composable
+private fun QueuedRow(q: QueuedApk, onRemove: () -> Unit) {
+    val m = q.apk.manifest
+    val p = q.op?.progress?.collectAsStateWithLifecycle()?.value
+    Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(q.apk.name, style = T.bodyStrong.copy(fontSize = 15.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            MetaText(
+                p?.let { it.phase + (it.fraction?.let { f -> " ${(f * 100).toInt()}%" } ?: "") }
+                    ?: "${m.versionName ?: "build ${m.versionCode}"} · ${q.problem ?: "${formatSize(q.apk.size)} APK file"}",
+                if (p == null && q.problem != null) C.Amber else C.Muted,
+            )
+        }
+        if (q.op == null) IconBtn(Icons.Close, "Remove ${q.apk.name} from the list", onRemove)
     }
 }

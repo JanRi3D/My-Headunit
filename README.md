@@ -182,6 +182,20 @@ The car's Wi-Fi usually has no internet, and the phone may have no mobile data t
 - Without a stored APK and without internet, installing fails with a message pointing to
   "Download for offline".
 
+### Preparing APK files before going to the car
+
+While not connected, **APK files for the car** → Add picks one or more APK files (from any
+folder, one pick at a time). Each is copied into app storage (`files/queue`, one per package; a
+new pick replaces the queued APK of the same app) and checked like "APK from phone". The list
+warns, based on the car as last seen, when an APK doesn't fit the car or the car already has that
+version.
+
+At the car, the update card lists the queued files together with the release updates, and
+**Update on the car** installs all of them, one after another. A queued file replaces the release
+update of its app (also in "Download for offline"). Installed files leave the list, as do files
+the car already has that version (or a newer one) of when it connects; a failed install stays
+queued. Apps installed from the list are added to the app list.
+
 ## Installing APKs
 
 "APK from phone" uses the system file picker, copies the file into app storage, and reads it
@@ -255,7 +269,12 @@ Verified on 2026-10-07 with emulators (Android 16 phone emulator running the app
 - offline updates (with the phone emulator's own adbd as the car): car remembered after
   disconnecting, "Download for offline" of OpenAuto and Welle while online, then with the
   phone's HTTP blocked: "Check failed" (not "up to date") and Welle installed from the stored
-  APK, which was removed afterwards.
+  APK, which was removed afterwards;
+- prepared APK files (2026-10-10, Android 16 phone emulator, `HeadUnit_1280` Android 4.1.2 as
+  the car at `10.0.2.2:5557`): two files picked at once while disconnected, kept across a
+  reinstall of the app, "the car has … already" warning from the last-seen car, a queued file the
+  car already had dropped on connecting, the other installed with one tap on "Update on the car"
+  and added to the app list.
 
 **Not verified — needs the physical head unit**: its real Wi-Fi/hotspot routing at
 `192.168.43.1` with the phone's mobile data as internet, the 4 KiB packet limit on real

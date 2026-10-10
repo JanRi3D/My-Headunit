@@ -49,6 +49,9 @@ data class AppRow(
     val installable get() = installedKnown && installed == null && release != null && incompatible == null
 }
 
+/** A queued APK as shown: its running install, and why it can't go on the car (as connected, or as last seen). */
+data class QueuedApk(val apk: LocalApk, val op: Op?, val problem: String?)
+
 sealed interface CheckState {
     data class Idle(val lastOk: Long) : CheckState
     data object Checking : CheckState
@@ -95,6 +98,10 @@ class AppsModel(private val app: App) {
     /** "pkg@versionCode" the user answered "Not now" for, until the next manual check. */
     private val dismissed = MutableStateFlow<Set<String>>(emptySet())
 
+    /** APK files picked ahead of time, installed at the car with the updates; one per package, kept as `<package>.apk`. */
+    private val queueDir = File(app.filesDir, "queue")
+    private val queue = MutableStateFlow<List<LocalApk>>(emptyList())
+
     val apps: StateFlow<List<ManagedApp>> = managed
 
     // Connected: what the car reports. Otherwise: what it had at the last visit.
@@ -119,9 +126,25 @@ class AppsModel(private val app: App) {
         }
     }.stateIn(app.scope, SharingStarted.Eagerly, emptyList())
 
-    /** Updates to offer in the update card. */
-    val pending: StateFlow<List<AppRow>> = combine(rows, dismissed) { r, d ->
-        r.filter { it.updateAvailable && it.op == null && "${it.app.packageName}@${it.release!!.versionCode}" !in d }
+    /** Updates to offer in the update card. A queued APK file replaces the release of its app. */
+    val pending: StateFlow<List<AppRow>> = combine(rows, dismissed, queue) { r, d, q ->
+        r.filter { row ->
+            row.updateAvailable && row.op == null && "${row.app.packageName}@${row.release!!.versionCode}" !in d &&
+                q.none { it.manifest.packageName == row.app.packageName }
+        }
+    }.stateIn(app.scope, SharingStarted.Eagerly, emptyList())
+
+    val queued: StateFlow<List<QueuedApk>> = combine(queue, onCar, busy, snapshot) { q, oc, ops, snap ->
+        val t = car.info?.traits ?: snap?.traits
+        q.map { a ->
+            val m = a.manifest
+            val have = oc?.first?.get(m.packageName)?.takeIf { it.versionCode >= m.versionCode }
+            QueuedApk(
+                a, ops[m.packageName],
+                t?.let { incompatibility(m.minSdk, a.abis, it.sdk, it.release, it.abis) }
+                    ?: have?.let { "the car has ${it.versionName ?: "build ${it.versionCode}"} already" },
+            )
+        }
     }.stateIn(app.scope, SharingStarted.Eagerly, emptyList())
 
     private var checkJob: Job? = null
@@ -140,6 +163,13 @@ class AppsModel(private val app: App) {
         }
         // Also away from the car: release metadata is a few KB, so check at app start when stale.
         app.scope.launch { if (stale()) checkUpdates(manual = false) }
+        app.scope.launch {
+            queue.value = withContext(Dispatchers.IO) {
+                queueDir.listFiles().orEmpty().sortedBy { it.lastModified() }.mapNotNull { f ->
+                    runCatching { inspectApkFile(app, f, f.name) }.getOrElse { f.delete(); null }
+                }
+            }
+        }
     }
 
     private fun stale() = System.currentTimeMillis() - settings.lastCheckOk > 30 * 60_000
@@ -166,11 +196,15 @@ class AppsModel(private val app: App) {
             settings.carSnapshot = s
         }
         cache.prune(now, releases.value)
+        // Queued APKs the car has by now (installed from the queue, or otherwise).
+        val done = queue.value.filter { ApkCache.isStale(it.manifest.versionCode, now[it.manifest.packageName], null) }
+        done.forEach { it.file.delete() }
+        queue.update { it - done.toSet() }
     }
 
     suspend fun refreshInstalled() {
         try {
-            setInstalled(car.installedVersions(managed.value.map { it.packageName }))
+            setInstalled(car.installedVersions((managed.value.map { it.packageName } + queue.value.map { it.manifest.packageName }).distinct()))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -227,25 +261,34 @@ class AppsModel(private val app: App) {
 
     /** Downloads and installs the known release of each app, one after another (after the user confirmed). */
     fun installReleases(targets: List<ManagedApp>) {
-        for (a in targets.filter { busy.value[it.packageName] == null }) {
-            Ops.launch(app, app.scope, "Installing ${a.name} on the car") { op ->
-                busy.update { it + (a.packageName to op) }
-                op.phase("Waiting…")
-                try {
-                    installLock.withLock {
-                        val was = installed.value?.get(a.packageName)
-                        val now = installRelease(a, op)
-                        val v = now.versionName ?: "build ${now.versionCode}"
-                        app.say(if (was != null) "${a.name} updated to $v" else "${a.name} $v installed on the car")
-                    }
-                } catch (e: CancellationException) {
-                    app.say("${a.name}: cancelled")
-                    throw e
-                } catch (e: Exception) {
-                    app.say("${a.name}: ${e.message}")
-                } finally {
-                    busy.update { it - a.packageName }
+        for (a in targets) installOnCar(a.packageName, a.name) { op -> installRelease(a, op) }
+    }
+
+    /** Installs the queued APK files, one after another (after the user's tap). */
+    fun installQueue() {
+        for (apk in queue.value) installOnCar(apk.manifest.packageName, apk.name) { op -> installQueued(apk, op) }
+    }
+
+    /** Runs [install] as a tracked operation, after the installs before it; skipped while [pkg] is busy. */
+    private fun installOnCar(pkg: String, name: String, install: suspend (Op) -> InstalledVersion) {
+        if (busy.value[pkg] != null) return
+        Ops.launch(app, app.scope, "Installing $name on the car") { op ->
+            busy.update { it + (pkg to op) }
+            op.phase("Waiting…")
+            try {
+                installLock.withLock {
+                    val was = installed.value?.get(pkg)
+                    val now = install(op)
+                    val v = now.versionName ?: "build ${now.versionCode}"
+                    app.say(if (was != null) "$name updated to $v" else "$name $v installed on the car")
                 }
+            } catch (e: CancellationException) {
+                app.say("$name: cancelled")
+                throw e
+            } catch (e: Exception) {
+                app.say("$name: ${e.message}")
+            } finally {
+                busy.update { it - pkg }
             }
         }
     }
@@ -259,6 +302,44 @@ class AppsModel(private val app: App) {
         setInstalled((installed.value ?: emptyMap()) + (a.packageName to now))
         cache.drop(a.packageName) // installed: the download isn't needed any more (a failed install keeps it)
         return now
+    }
+
+    private suspend fun installQueued(apk: LocalApk, op: Op): InstalledVersion {
+        val info = car.info ?: throw me.ri3d.adb.car.NotConnected()
+        val m = apk.manifest
+        incompatibility(m.minSdk, apk.abis, info.sdk, info.release, info.abis)?.let { throw IllegalStateException(it) }
+        withContext(Dispatchers.IO) { saveIcon(app, apk.file, m.packageName) }
+        val now = car.installApk(apk.file, m.packageName, m.versionCode) { p -> op.report(p) }
+        addCustom(m.packageName, apk.name)
+        setInstalled((installed.value ?: emptyMap()) + (m.packageName to now)) // also takes it off the queue
+        return now
+    }
+
+    /** Copies APK files into the queue (picked ahead of time, away from the car); a new pick replaces the app's queued APK. */
+    fun enqueue(uris: List<Uri>) {
+        app.scope.launch {
+            for (uri in uris) {
+                try {
+                    val apk = withContext(Dispatchers.IO) {
+                        val a = inspectApk(app, uri, File(app.filesDir, "queueing"))
+                        val f = File(queueDir.apply { mkdirs() }, "${a.manifest.packageName}.apk")
+                        if (!a.file.renameTo(f)) throw java.io.IOException("Couldn't store ${a.displayName}")
+                        a.copy(file = f)
+                    }
+                    queue.update { q -> q.filter { it.manifest.packageName != apk.manifest.packageName } + apk }
+                    app.say("${apk.name} will be installed at the car")
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    app.say(e.message ?: "Couldn't read the file")
+                }
+            }
+        }
+    }
+
+    fun dequeue(apk: LocalApk) {
+        queue.update { it - apk }
+        apk.file.delete()
     }
 
     /** The release APK from the offline store, downloading and verifying it first if needed. */
